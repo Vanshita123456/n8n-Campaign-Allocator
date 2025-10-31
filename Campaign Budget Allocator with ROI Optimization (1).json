@@ -1,0 +1,388 @@
+{
+  "name": "Campaign Budget Allocator with ROI Optimization",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "6825a87d-e575-41b2-865b-ddb0f5ecfb43",
+      "name": "Campaign Budget Chat",
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1776,
+        912
+      ],
+      "webhookId": "<REDACTED_WEBHOOK_ID>"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "id-1",
+              "name": "campaigns",
+              "value": "[{\"channel\":\"Search\",\"roi_per_dollar\":0.08,\"min\":100,\"max\":5000,\"historical_spend\":12000,\"historical_conversions\":960},{\"channel\":\"Social\",\"roi_per_dollar\":0.05,\"min\":50,\"max\":3000,\"historical_spend\":5000,\"historical_conversions\":250},{\"channel\":\"Email\",\"roi_per_dollar\":0.12,\"min\":0,\"max\":1000,\"historical_spend\":2000,\"historical_conversions\":240},{\"channel\":\"Display\",\"roi_per_dollar\":0.03,\"min\":0,\"max\":2000,\"historical_spend\":3000,\"historical_conversions\":90}]",
+              "type": "array"
+            },
+            {
+              "id": "id-2",
+              "name": "total_budget",
+              "value": 21000,
+              "type": "number"
+            },
+            {
+              "id": "id-3",
+              "name": "optimization_goal",
+              "value": "maximize_roi",
+              "type": "string"
+            },
+            {
+              "id": "id-4",
+              "name": "sessionId",
+              "value": "demo-001",
+              "type": "string"
+            },
+            {
+              "id": "id-5",
+              "name": "chatInput",
+              "value": "Optimize my campaigns",
+              "type": "string"
+            },
+            {
+              "id": "id-6",
+              "name": "allocator_type",
+              "value": "linear",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "id": "e0f905bf-e1b0-43a3-9cc2-3a3c33bb6d49",
+      "name": "Campaign Data",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1552,
+        896
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "You are an expert marketing analyst specializing in campaign budget allocation and ROI optimization. Your role is to analyze campaign performance data and provide strategic recommendations for budget reallocation to maximize return on investment.\n\nWhen analyzing campaigns, consider:\n- ROI (Return on Investment) = (Revenue - Budget) / Budget\n- CTR (Click-Through Rate) = Clicks / Impressions\n- Conversion Rate = Conversions / Clicks\n- Cost per Conversion = Budget / Conversions\n- Revenue per Conversion = Revenue / Conversions\n\nProvide clear, actionable recommendations with specific budget amounts and expected outcomes. Use the calculator tool for precise calculations and the budget allocation tool to generate optimized budget distributions.\n\nIMPORTANT: After providing recommendations, use the Google Sheets tool to write the results to the spreadsheet. For each campaign, write a row with: campaign name, current budget, recommended budget, change amount, change percentage, ROI, and efficiency score.\n\nAvailable campaign data includes: campaign names, current budgets, impressions, clicks, conversions, and revenue."
+        }
+      },
+      "id": "1d3c7c2d-a149-4639-be0b-3b44bef3f4a5",
+      "name": "ROI Optimization Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        -992,
+        608
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "36168bc3-45e0-44e0-bea4-61c60d7509aa",
+      "name": "ROI Calculator",
+      "type": "@n8n/n8n-nodes-langchain.toolCalculator",
+      "typeVersion": 1,
+      "position": [
+        -976,
+        832
+      ]
+    },
+    {
+      "parameters": {
+        "description": "Optimizes budget allocation across campaigns using linear (greedy by ROI) or diminishing returns algorithms. Input: campaigns array with roi_per_dollar, min, max constraints, and total_budget. Output: optimized allocation per channel with expected conversions.",
+        "jsCode": "const input = items[0].json; const totalBudget = Number(input.total_budget || 0); const allocator = (input.allocator_type || 'linear').toLowerCase(); let channels = (input.campaigns || []).map(ch => ({ channel: String(ch.channel), roi: Number(ch.roi_per_dollar ?? 0), min: Number(ch.min ?? 0), max: Number(ch.max ?? Infinity), alloc: 0, historical_spend: Number(ch.historical_spend ?? 0), historical_conversions: Number(ch.historical_conversions ?? 0), a: ch.est_a ? Number(ch.est_a) : undefined, b: ch.est_b ? Number(ch.est_b) : undefined })); let remaining = totalBudget; channels.forEach(ch => { const take = Math.min(ch.min, remaining); ch.alloc = take; remaining -= take; }); if (allocator === 'linear') { channels.sort((a,b) => b.roi - a.roi); for (let ch of channels) { if (remaining <= 0) break; const can = Math.max(0, ch.max - ch.alloc); const give = Math.min(can, remaining); ch.alloc += give; remaining -= give; } } else { channels.forEach(c => { if (!c.a) c.a = Math.max(1, c.roi * 100); if (!c.b) c.b = Math.max(0.001, c.roi / 10); }); const step = Math.max(1, Math.round(totalBudget / 500)); while (remaining > 0) { let best=null, bestGain=-Infinity; for (let c of channels) { if (c.alloc + step > c.max) continue; const mg = c.a * c.b / (1 + c.b * c.alloc); if (mg > bestGain) { bestGain = mg; best = c; } } if (!best) break; const give = Math.min(step, remaining, best.max - best.alloc); best.alloc += give; remaining -= give; } } const allocations = channels.map(c => ({ channel: c.channel, allocation: Math.round(c.alloc*100)/100, expected_conversions: Math.round((c.alloc*c.roi)*100)/100, roi_per_dollar: c.roi, min: c.min, max: c.max, historical_spend: c.historical_spend, historical_conversions: c.historical_conversions })); const total_expected = allocations.reduce((s,a)=>s+(a.expected_conversions||0),0); return [{ json:{ total_budget: totalBudget, remaining: Math.round(remaining*100)/100, allocations, total_expected_conversions: Math.round(total_expected*100)/100 } }];"
+      },
+      "id": "89953a5b-71ec-45d1-957d-3a3abe19038d",
+      "name": "Budget Allocation Tool",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        -848,
+        832
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "=gemini-1.5-flash",
+        "options": {}
+      },
+      "id": "6d47daee-e0ad-4a1b-8123-b13d3edddf84",
+      "name": "Google Gemini",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -1104,
+        832
+      ],
+      "credentials": {
+        "googlePalmApi": "<REDACTED_CREDENTIAL>"
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Writes campaign budget recommendations to Google Sheets. Provide the campaign name, current budget, recommended budget, change amount, change percentage, ROI, and efficiency score as input.",
+        "operation": "append",
+        "documentId": "<REDACTED_SHEET_ID>",
+        "sheetName": "<REDACTED_SHEET_NAME>",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "1173d940-02f5-4c51-a007-228a7da11a5c",
+      "name": "Write to Google Sheets",
+      "type": "n8n-nodes-base.googleSheetsTool",
+      "typeVersion": 4.7,
+      "position": [
+        -720,
+        832
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": "<REDACTED_CREDENTIAL>"
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = items[0].json || {}; if (!data.campaigns || !Array.isArray(data.campaigns)) throw new Error('campaigns array required: [ { channel, roi_per_dollar, min, max } ]'); if (data.total_budget === undefined) throw new Error('total_budget required'); const campaigns = data.campaigns.map(c => ({ channel: c.channel || c.name || 'unknown', roi_per_dollar: Number(c.roi_per_dollar ?? c.roi ?? 0), min: Number(c.min ?? c.min_budget ?? 0), max: Number(c.max ?? c.max_budget ?? 999999999), historical_spend: Number(c.historical_spend ?? 0), historical_conversions: Number(c.historical_conversions ?? 0), est_a: c.est_a ? Number(c.est_a) : undefined, est_b: c.est_b ? Number(c.est_b) : undefined })); return [{ json: { sessionId: data.sessionId ?? '', chatInput: data.chatInput ?? '', campaigns, total_budget: Number(data.total_budget), optimization_goal: data.optimization_goal ?? 'maximize_roi' } }];"
+      },
+      "id": "806d2a47-2092-4de9-a165-5e67cd9eec05",
+      "name": "Validate & Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1328,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = items[0].json; const now = new Date().toISOString(); const sess = data.sessionId ?? ''; const total_budget = Number(data.total_budget ?? 0); const goal = data.optimization_goal ?? 'maximize_roi'; const allocations = data.allocations || []; return allocations.map(a => ({ json:{ timestamp: now, sessionId: sess, total_budget, optimization_goal: goal, channel: a.channel ?? '', allocation: Number(a.allocation ?? 0), expected_conversions: Number(a.expected_conversions ?? 0), roi_per_dollar: Number(a.roi_per_dollar ?? 0), min: Number(a.min ?? 0), max: Number(a.max ?? 0), historical_spend: Number(a.historical_spend ?? 0), historical_conversions: Number(a.historical_conversions ?? 0), notes: a.notes ?? '' }}));"
+      },
+      "id": "038eb9e9-8f9b-46a9-bc03-a0af77aea370",
+      "name": "Explode Allocations",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -432,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": "<REDACTED_SHEET_ID>",
+        "sheetName": "<REDACTED_SUMMARY_SHEET>",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ new Date().toISOString() }}",
+            "sessionId": "={{ $json.sessionId }}",
+            "total_budget": "={{ $json.total_budget }}",
+            "optimization_goal": "={{ $json.optimization_goal }}",
+            "total_expected_conversions": "={{ $json.total_expected_conversions }}",
+            "remaining": "={{ $json.remaining }}"
+          },
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "6d565694-0e58-4b4f-9a28-9195dd482434",
+      "name": "Write Run Summary",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -448,
+        944
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": "<REDACTED_CREDENTIAL>"
+      }
+    },
+    {
+      "parameters": {
+        "modelName": "gemini-1.5-flash",
+        "options": {}
+      },
+      "id": "10375ea2-1a59-4d30-8b76-5b9ba23b48e9",
+      "name": "Gemini Summary Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -592,
+        512
+      ],
+      "credentials": {
+        "googlePalmApi": "<REDACTED_CREDENTIAL>"
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a marketing analyst. Summarize these budget allocation recommendations in 4 concise bullet points for a marketing manager:\n\n• one-line summary of goal + budget\n• top 2 allocation choices and why\n• overall expected conversions\n• one limitation of model\n\nData: {{ $json.allocations }}\nTotal budget: {{ $json.total_budget }}\nOptimization goal: {{ $json.optimization_goal }}\n\nOutput: 4 short bullets only.",
+        "batching": {}
+      },
+      "id": "61cb7d5d-471f-44d5-8291-886ec44dc092",
+      "name": "Gemini Summary",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.7,
+      "position": [
+        -512,
+        352
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Campaign Budget Chat": {
+      "main": [
+        [
+          {
+            "node": "Campaign Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ROI Calculator": {
+      "ai_tool": [
+        [
+          {
+            "node": "ROI Optimization Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Budget Allocation Tool": {
+      "ai_tool": [
+        [
+          {
+            "node": "ROI Optimization Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "ROI Optimization Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write to Google Sheets": {
+      "ai_tool": [
+        [
+          {
+            "node": "ROI Optimization Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Campaign Data": {
+      "main": [
+        [
+          {
+            "node": "Validate & Normalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Normalize": {
+      "main": [
+        [
+          {
+            "node": "ROI Optimization Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ROI Optimization Agent": {
+      "main": [
+        [
+          {
+            "node": "Explode Allocations",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Write Run Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Gemini Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Explode Allocations": {
+      "main": [
+        []
+      ]
+    },
+    "Gemini Summary Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Gemini Summary",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Summary": {
+      "main": [
+        [
+          {
+            "node": "Write Run Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "<REDACTED_VERSION_ID>",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "<REDACTED_INSTANCE_ID>"
+  },
+  "id": "<REDACTED_WORKFLOW_ID>",
+  "tags": []
+}
